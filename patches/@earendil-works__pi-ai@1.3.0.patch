@@ -98,3 +98,31 @@ index 7da1c45..296d131 100644
                  break;
              }
              case "toolcall_end":
+diff --git a/dist/providers/opencode-headers.js b/dist/providers/opencode-headers.js
+index e6a31fe..0ed2b89 100644
+--- a/dist/providers/opencode-headers.js
++++ b/dist/providers/opencode-headers.js
+@@ -1,14 +1,21 @@
+ const OPENCODE_SESSION_HEADER = "x-opencode-session";
++const OPENCODE_SESSION_ID_HEADER = "x-opencode-session-id";
+ function hasHeader(headers, name) {
+     const expected = name.toLowerCase();
+     return Object.keys(headers ?? {}).some((key) => key.toLowerCase() === expected);
+ }
+ function withSessionHeader(options) {
+-    if (!options?.sessionId || hasHeader(options.headers, OPENCODE_SESSION_HEADER))
++    if (!options?.sessionId)
+         return options;
++    const affinity = options.sessionAffinity ?? options.sessionId;
++    const headers = { ...options.headers };
++    if (!hasHeader(headers, OPENCODE_SESSION_HEADER))
++        headers[OPENCODE_SESSION_HEADER] = affinity;
++    if (!hasHeader(headers, OPENCODE_SESSION_ID_HEADER))
++        headers[OPENCODE_SESSION_ID_HEADER] = options.sessionId;
+     return {
+         ...options,
+-        headers: { ...options.headers, [OPENCODE_SESSION_HEADER]: options.sessionId },
++        headers,
+     };
+ }
+ /** Adds OpenCode's required per-conversation routing header before API dispatch. */
