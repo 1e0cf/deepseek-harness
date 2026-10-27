@@ -413,16 +413,22 @@ export class PiAiAdapter extends LlmAdapter {
             maxBytes: profile.requestImageMaxBytes,
           },
         }, onReplayDegrade, updates.systemPromptUpdate === 'in-history')
-      const events = snapshot.models.streamSimple(model, context, {
+      // `sessionAffinity` is the lineage root, which routes an inherited history
+      // to the same provider-side cache bucket as its parent. Builds of pi-ai
+      // that do not read it ignore the extra field; the patched build maps it to
+      // the provider's session header instead of the raw session id.
+      const piOptions: Parameters<typeof snapshot.models.streamSimple>[2] & { sessionAffinity?: string } = {
         ...profileOptions(profile, reasoning, apiKey),
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
         ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
         ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
+        ...options.sessionAffinity === undefined ? {} : { sessionAffinity: String(options.sessionAffinity) },
         signal: watchdog.signal,
         // Profile headers are deployment-owned; attribution names are
         // Harness-owned and therefore win collisions.
         headers: requestHeaders(profile.headers),
-      })
+      }
+      const events = snapshot.models.streamSimple(model, context, piOptions)
       const iterator = toStreamChunks(events, model.contextWindow, options.signal, model.id)[Symbol.asyncIterator]()
       let exhausted = false
       try {

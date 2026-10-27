@@ -31,7 +31,7 @@ import { assertNever, deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type { Scope } from '@deepseek-ai/dsh-scope'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import type { EpochHeader, RequestContext, Session, SessionId, SessionSeq, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
-import { canonicalHeader, headerEquals, ToolCallRecovery } from '@deepseek-ai/dsh-session'
+import { canonicalHeader, headerEquals, resolveSessionAffinity, ToolCallRecovery } from '@deepseek-ai/dsh-session'
 import { joinContextSections, renderContextSections, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import { ToolActivationError, ToolBatchExecutionError } from '@deepseek-ai/dsh-tools'
@@ -131,6 +131,12 @@ export class ReactLoopAgent implements Agent {
   private assistantStreamRevision = 0
   private assistantAttemptCounter = 0
   private readonly systemPrompt: SystemPromptProjection
+  /**
+   * Cache-routing affinity of this session's lineage, resolved once because the
+   * session header is immutable. A subagent child or fork reports its lineage's
+   * root so a provider keys the inherited history to one cache bucket.
+   */
+  private readonly affinity: SessionId
   /** Identities fully frozen by this loop; weak references do not retain replaced history. */
   private readonly frozenMessages = new WeakSet<Message>()
 
@@ -151,6 +157,8 @@ export class ReactLoopAgent implements Agent {
     this.phase = { kind: 'idle', lastTurn }
     this.runtimeContext = new RuntimeContextProjection(this.ctx, session)
     this.systemPrompt = new SystemPromptProjection(session)
+    const sessions = loopCtx.get('sessions')
+    this.affinity = resolveSessionAffinity(session, id => sessions?.get(id))
   }
 
   get status(): AgentStatus {
@@ -738,6 +746,7 @@ export class ReactLoopAgent implements Agent {
       toolHistory: session.toolHistory(),
       ...header.tools !== undefined ? { tools: header.tools } : {},
       sessionId: this.session.id,
+      sessionAffinity: this.affinity,
       signal,
     }))
     return request

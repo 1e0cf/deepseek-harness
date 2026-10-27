@@ -589,6 +589,15 @@ export interface GenerateOptions {
    */
   sessionId?: Branded<'SessionId'>
   /**
+   * Cache-routing affinity stamped by the loop: the root of the session's
+   * lineage. A descendant inherits its parent's history, so an adapter that
+   * keys a provider-side prompt cache by this value reuses the parent's cached
+   * prefix only when the child reports the same root. Equal to {@link sessionId}
+   * for a top-level session; adapters may map it to transport metadata instead
+   * of the session id, and leave the id itself in place where both are needed.
+   */
+  sessionAffinity?: Branded<'SessionId'>
+  /**
    * Provider-neutral classification for an auxiliary model call. Adapters may
    * map the purpose to model-hidden transport metadata. Ordinary conversation
    * requests leave it unset.
