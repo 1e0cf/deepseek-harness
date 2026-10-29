@@ -197,11 +197,21 @@ export class ReactLoopAgent implements Agent {
   }
 
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
+    this.dispatch.emit('agent/cancel-requested', { cause })
     if (!options.keepInbox) {
       this.inbox.clear()
       if (this.phase.kind !== 'idle') this.phase.wakeRequested = false
     }
     if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
+  }
+
+  /**
+   * Run the pending inbox item an outstanding checkpoint left behind, without
+   * inserting a new one. Recovery resumes exact input this way; anything else
+   * is a no-op, so a supervisor never has to reason about the driver phase.
+   */
+  wakePending(): void {
+    if (this.phase.kind === 'idle' && this.inbox.hasPending) this.wakeDriver()
   }
 
   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {

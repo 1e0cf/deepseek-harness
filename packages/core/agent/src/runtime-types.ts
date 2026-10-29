@@ -220,6 +220,14 @@ declare module './types.ts' {
     whenIdle(): Promise<void>
 
     /**
+   * Run pending inbox work that is already queued, without adding a message.
+   * A recovery supervisor uses this to resume the exact outstanding input of a
+   * durable checkpoint; it is a no-op while the agent is not idle or holds
+   * nothing pending.
+   */
+    wakePending(): void
+
+    /**
    * Run one non-turn maintenance task from the true idle phase. The task starts
    * synchronously after claiming that phase; later waking input remains in the
    * inbox until the task settles, while public status stays `idle`.
@@ -297,6 +305,25 @@ declare module '@deepseek-ai/cordis' {
      * @mode emit
      */
     'agent/disposed'(this: Scoped<Agent>, payload: { agent: Agent }): void
+    /**
+     * A cancel was requested, before the inbox is cleared and the active
+     * activity is aborted. A supervisor inspects the cause here to tell a user
+     * stop from an internal cancellation.
+     * @param payload.agent - the agent being cancelled.
+     * @param payload.cause - the caller intent carried by the active operation.
+     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+     * @mode emit
+     */
+    'agent/cancel-requested'(this: Scoped<Agent>, payload: { agent: Agent; cause: AgentCancelCause }): void
+    /**
+     * A disposal is about to cancel and quiesce the driver. A supervisor
+     * checkpoints the outstanding work here, while the agent is still alive.
+     * @param payload.agent - the agent about to be disposed.
+     * @param payload.cancelOptions - the cancellation options the disposal will apply.
+     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+     * @mode serial
+     */
+    'agent/before-dispose'(this: Context, payload: { agent: Agent; cancelOptions: CancelOptions }): void | Promise<void>
     /**
      * Agent status changed (`idle` ⇄ `running`). A waking delivery enters
      * `running` synchronously after reserving cancellation; `idle` means no

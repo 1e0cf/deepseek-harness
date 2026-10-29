@@ -515,7 +515,19 @@ export class AgentLoop extends Service implements AgentFactory {
         if (machine === undefined) await machineReady.promise
         /* v8 ignore next -- setup failure untracks this disposer before resolving without a machine. */
         if (machine !== undefined) {
-          machine.cancel({ kind: 'disposed' }, { keepInbox: !ready })
+          // Checkpoint the outstanding work while the agent still has it: a
+          // supervisor re-admits exactly this input after the host comes back.
+          // The dispatch starts synchronously — a listener reads the inbox as it
+          // is now — but it is awaited only after the cancel, because waiting
+          // here would let a latent wake open the very turn disposal drops.
+          const cancelOptions = { keepInbox: !ready }
+          const checkpoint = this.ctx.serial('agent/before-dispose', { agent: machine, cancelOptions })
+          machine.cancel({ kind: 'disposed' }, cancelOptions)
+          try {
+            await checkpoint
+          } catch (error: unknown) {
+            failures.push(error)
+          }
           await machine.whenIdle()
         }
       } catch (error: unknown) {
