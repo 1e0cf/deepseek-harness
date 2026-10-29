@@ -1080,6 +1080,35 @@ describe('Trajectory conversation Definitions', () => {
     expect(snapshot(value).requests.at(-1)).toMatchObject({ promptChange: { seq: 12, kind: 'system' } })
   })
 
+  it('keeps a withdrawn synthetic header hidden while prepending the replacement endpoint', () => {
+    const history = [
+      at(1, 'turn/start', { turn: 1 }),
+      at(2, 'step/start', { turn: 1, step: 1 }),
+      at(3, 'system/message', { turn: 1, step: 1, message: systemMessage('A') }, { surfaceOp: 'append' }),
+      at(4, 'request/header', {
+        reason: 'initial', header: { config: { provider: 'test', model: 'test' }, tools: [] },
+      }),
+      at(5, 'system/message', { turn: 1, step: 1, message: systemMessage('B') }, {
+        surfaceOp: { op: 'replace', startSeq: 3, endSeq: 3 },
+      }),
+      at(6, 'request/header', {
+        reason: 'resume', header: { config: { provider: 'test', model: 'test' }, tools: [] },
+      }),
+      at(7, 'user/message', {
+        id: 'summary', role: 'user', content: [{ type: 'text', text: 'summary' }],
+        source: { kind: 'compact-checkpoint', compactionId: 'compaction-1' },
+      }, { surfaceOp: { op: 'replace', startSeq: 3, endSeq: 6 } }),
+      at(8, 'assistant/message', { turn: 1, step: 1, message: assistantMessage('a', 'reply') }),
+    ]
+    const value = assembler(history.slice(3), true)
+    value.prepend(history.slice(0, 3), false)
+    expect(() => value.flush()).not.toThrow()
+    const complete = snapshot(assembler(history))
+    expect(snapshot(value).eventNodes).toEqual(complete.eventNodes)
+    expect(snapshot(value).requests).toEqual(complete.requests)
+    expect(snapshot(value).systemPrompts).toEqual(complete.systemPrompts)
+  })
+
   it('withholds unknown replacement order in request headers until prepend', () => {
     const system = (seq: number, text: string, replaces?: number) => at(seq, 'system/message', {
       turn: 1, step: 1, message: systemMessage(text),

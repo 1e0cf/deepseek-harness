@@ -81,10 +81,14 @@ function trajectorySystemMessageDefinition(inspect: SystemPromptInspector): Conv
         return trajectoryNode(context, state.header.seq, { kind: 'request-header', header: state.header })
       }
       const prompt = state?.introduced
-      return prompt !== undefined && prompt.text !== ''
-        && context.start?.event.type === 'system/message' && context.start.event.surfaceOp === 'append'
-        ? trajectoryNode(context, prompt.seq, { kind: 'system-prompt', prompt })
-        : null
+      if (prompt !== undefined && prompt.text !== ''
+        && context.start?.event.type === 'system/message' && context.start.event.surfaceOp === 'append') {
+        return trajectoryNode(context, prompt.seq, { kind: 'system-prompt', prompt })
+      }
+      // Prepending an unloaded replacement endpoint can invalidate a synthetic
+      // header. Retain its identity while withdrawing its contribution.
+      const current = context.current.get('trajectory')
+      return current == null ? null : { ...current, data: { kind: 'hidden' } }
     },
   }
 }

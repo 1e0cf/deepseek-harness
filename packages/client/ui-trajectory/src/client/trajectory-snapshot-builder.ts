@@ -221,6 +221,7 @@ export class TrajectorySnapshotBuilder implements ConversationViewBuilder<
 
     for (const contribution of this.contributions) {
       const data = contribution.data
+      if (data.kind === 'hidden') continue
       if (data.kind === 'system-prompt') {
         if (!representedPrompts.has(data.prompt.seq)) systemPrompts.push(data.prompt)
         continue
