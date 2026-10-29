@@ -1,6 +1,7 @@
 /** Serialized module and profile-configuration reloads. */
 import assert from 'node:assert/strict'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { randomUUID } from 'node:crypto'
 import { watchConfig as watchExactConfig } from './watch-config.ts'
 import { Context, FiberState, Inject, Service, type Fiber, type Plugin } from '@deepseek-ai/cordis'
 import type { Entry, ModuleLoader, ModuleJob, ResolveResult } from '@deepseek-ai/cordis-plugin-loader'
@@ -38,6 +39,28 @@ declare module '@deepseek-ai/cordis' {
      * @param reloads Replaced plugins and their module locations.
      */
     'hmr/reload'(reloads: Map<Plugin, Reload>): void
+    /** A configuration reload is about to run, before anything is replaced.
+     * A supervisor checkpoints in-flight work here, while the old plugins are
+     * still mounted.
+     * @mode serial
+     * @param payload.id Stable identity of this reload attempt.
+     * @param payload.filename Watched configuration file that triggered it.
+     */
+    'hmr/before-reload'(payload: { id: string; kind: 'config'; filename: string }): void | Promise<void>
+    /** A configuration reload finished and every plugin is mounted again.
+     * @mode serial
+     * @param payload.id Identity carried by the matching `hmr/before-reload`.
+     * @param payload.filename Watched configuration file that triggered it.
+     */
+    'hmr/after-reload'(payload: { id: string; kind: 'config'; filename: string }): void | Promise<void>
+    /** A configuration reload failed; the host keeps running on the previous
+     * plugin set and a supervisor recovers the checkpoint made before it.
+     * @mode serial
+     * @param payload.id Identity carried by the matching `hmr/before-reload`.
+     * @param payload.filename Watched configuration file that triggered it.
+     * @param payload.error Why the reload failed.
+     */
+    'hmr/reload-failed'(payload: { id: string; kind: 'config'; filename: string; error: unknown }): void | Promise<void>
   }
 }
 
@@ -275,10 +298,31 @@ class Hmr extends Service {
     return task
   }
 
-  private runReload(operation: () => Promise<void>): Promise<void> {
+  /**
+   * @param operation Rebuilds configuration from its current files and awaits Loader completion.
+   * @param filename Watched file that triggered the reload, named in the lifecycle events.
+   */
+  private runReload(operation: () => Promise<void>, filename = 'profile'): Promise<void> {
     return this.runExclusive(async () => {
-      if (await this.applicationReady) await operation()
+      if (!await this.applicationReady) return
+      const reload = { id: randomUUID(), kind: 'config' as const, filename }
+      try {
+        await this.ownerContext.serial('hmr/before-reload', reload)
+        await operation()
+        await this.ownerContext.serial('hmr/after-reload', reload)
+      } catch (error) {
+        await this.ownerContext.serial('hmr/reload-failed', { ...reload, error })
+        throw error
+      }
     })
+  }
+
+  /** Reload a file's configuration while naming that file to the lifecycle listeners.
+   * @param filename Watched configuration file.
+   * @param refresh Rebuilds configuration from its current files.
+   */
+  private runReloadWithFilename(filename: string, refresh: () => Promise<void>): Promise<void> {
+    return this.runReload(refresh, filename)
   }
 
   /** Watch a configuration path through the same queue as module replacement.
@@ -292,7 +336,11 @@ class Hmr extends Service {
     for (const path of paths) this.configPaths.add(path)
     try {
       const dispose = await this.executing.exit(() => watchExactConfig(
-        this.ownerContext, filename, this.config, () => this.runReload(refresh), () => this.executing.getStore() === true,
+        this.ownerContext,
+        filename,
+        this.config,
+        () => this.runReloadWithFilename(filename, refresh),
+        () => this.executing.getStore() === true,
       ))
       return async () => {
         await dispose()
