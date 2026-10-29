@@ -11,9 +11,9 @@
  */
 
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { FiberState, type Context } from '@deepseek-ai/cordis'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { FiberState, type Context, type Plugin } from '@deepseek-ai/cordis'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import {
   boot,
@@ -39,6 +39,29 @@ import { provideCmdline, type AppReady } from '@deepseek-ai/dsh-cmdline'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
 
 const NAME = 'dsh'
+
+/** Upper bound for the supervisor-requested shutdown grace, in milliseconds. */
+const MAX_SHUTDOWN_GRACE_MS = 300_000
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * The process is stopping because a supervisor asked it to (SIGTERM), and
+     * the mounted plugins may still commit durable state. Listeners run before
+     * any fiber is disposed.
+     * @param payload.reason - why the host is going down; only `sigterm` today.
+     * @mode serial
+     */
+    'host/before-shutdown'(payload: { reason: 'sigterm' }): void | Promise<void>
+    /**
+     * The profile tree is active, its Loader is mounted and the app readiness
+     * signal is committed: plugins may now resume work that outlived the
+     * previous host.
+     * @mode serial
+     */
+    'host/recovery-ready'(): void | Promise<void>
+  }
+}
 
 /** Launcher-owned readiness signal committed only after boot and host setup succeed. */
 function createAppReady(): { service: AppReady; commit(): void } {
@@ -279,9 +302,18 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
   )
 
   const app: { current?: Context } = {}
+  // Set by the SIGTERM handler only, so a supervisor stop can be told from a
+  // user interrupt or a fatal error when the profile is torn down.
+  let supervisorTermination = false
   let disposal: Promise<void> | undefined
   const dispose = (): Promise<void> => disposal ??= (async () => {
     const failures: unknown[] = []
+    if (supervisorTermination && app.current !== undefined) {
+      // The tree is still mounted: a supervisor checkpoints its outstanding
+      // work here, before the fibers that own it are gone.
+      try { await app.current.serial('host/before-shutdown', { reason: 'sigterm' }) }
+      catch (error) { failures.push(error) }
+    }
     for (const release of [() => app.current?.fiber.dispose(), disposeProxy]) {
       try { await release() } catch (error) { failures.push(error) }
     }
@@ -293,7 +325,14 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       options.profile, options.patchFiles, options.fromDefaultProfile, options.resolvedProfile,
     )
     const appReady = createAppReady()
-    const shutdown = createProcessShutdown(dispose)
+    // A supervisor that checkpoints work needs longer than the default bounded
+    // exit, and states it per host instead of editing the launcher.
+    const graceRaw = options.environment.get('DSH_GRACEFUL_SHUTDOWN_TIMEOUT_MS')?.value
+    const grace = graceRaw === undefined ? undefined : Number(graceRaw)
+    if (grace !== undefined && (!Number.isSafeInteger(grace) || grace <= 0 || grace > MAX_SHUTDOWN_GRACE_MS)) {
+      throw new Error(`Invalid DSH_GRACEFUL_SHUTDOWN_TIMEOUT_MS: expected an integer in 1..${MAX_SHUTDOWN_GRACE_MS}`)
+    }
+    const shutdown = createProcessShutdown(dispose, undefined, undefined, grace)
     const signalShutdown = new AbortController()
     const interrupt = (code: number): void => {
       signalShutdown.abort()
@@ -304,7 +343,10 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     // SIGTERM is a supervisor's ordinary stop request and exits 0 on every
     // surface — the launcher does not know whether the app considered its work
     // complete; SIGINT is a user interrupt and reports 130.
-    process.on('SIGTERM', () => { interrupt(0) })
+    process.on('SIGTERM', () => {
+      supervisorTermination = true
+      interrupt(0)
+    })
     process.on('SIGINT', () => { interrupt(130) })
     installFailLoud(NAME, process, async () => {
       await app.current?.fiber.dispose()
@@ -326,6 +368,15 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       // Before any config-tree entry mounts, so plugins resolve all launch-time
       // environment values from the same immutable launch snapshot.
       hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, options.environment)
+      // A host supervisor is mounted before the profile tree so it observes
+      // every plugin's lifecycle from the first mount, and so a failure in it
+      // fails the boot loudly instead of leaving a half-supervised host.
+      const recoveryPath = options.environment.get('DSH_RECOVERY_PLUGIN_PATH')?.value
+      if (recoveryPath !== undefined) {
+        if (!isAbsolute(recoveryPath)) throw new Error('DSH_RECOVERY_PLUGIN_PATH must be absolute')
+        const recoveryModule = await import(pathToFileURL(recoveryPath).href) as { default?: Plugin }
+        await hostCtx.plugin(recoveryModule.default ?? (recoveryModule as Plugin))
+      }
       await hostCtx.plugin(PluginPackages, {
         resolution: composed.resolution,
       })
@@ -342,6 +393,9 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       && ctx.fiber.state === FiberState.ACTIVE
       && ctx.get('loader') !== undefined) {
       appReady.commit()
+      // Readiness is an explicit edge, not a timer: a supervisor resumes its
+      // checkpointed work only once the tree it resumes into is complete.
+      await ctx.serial('host/recovery-ready')
     }
     return { ctx, shutdown }
   } catch (error) {
