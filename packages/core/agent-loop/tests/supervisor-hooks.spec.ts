@@ -58,7 +58,7 @@ describe('agent supervisor hooks', () => {
     const ctx = await harness(adapter)
     const agent = await ctx.agentLoop.create(SessionId('wake-empty'), { provider: 'mock', model: 'mock' })
 
-    agent.wakePending()
+    agent.wakePending?.()
     await Promise.resolve()
 
     expect(adapter.requests).toHaveLength(0)

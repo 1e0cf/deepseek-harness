@@ -206,6 +206,7 @@ declare module './types.ts' {
    * Clear queued and steering work — unless `keepInbox` — and abort the active
    * turn or between-turn task. The first cause wins for that activity. With no
    * active activity, cancellation is a no-op and does not arm later work.
+   * Queue-write failures still abort the activity and propagate to the caller.
    * @param cause - the stable caller intent carried by the active operation signal.
    * @param options - cancellation options; `keepInbox` preserves pending work.
    */
@@ -223,9 +224,10 @@ declare module './types.ts' {
    * Run pending inbox work that is already queued, without adding a message.
    * A recovery supervisor uses this to resume the exact outstanding input of a
    * durable checkpoint; it is a no-op while the agent is not idle or holds
-   * nothing pending.
+   * nothing pending. Optional so test doubles and third-party agents that never
+   * checkpoint need not implement it.
    */
-    wakePending(): void
+    wakePending?(): void
 
     /**
    * Run one non-turn maintenance task from the true idle phase. The task starts
